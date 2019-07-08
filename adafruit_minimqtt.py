@@ -4,7 +4,7 @@
 #
 # Original Work Copyright (c) 2016 Paul Sokolovsky, uMQTT
 # Modified Work Copyright (c) 2019 Bradley Beach, esp32spi_mqtt
-# 
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
@@ -160,7 +160,7 @@ class MQTT:
         :param str topic: MQTT Broker topic.
         :param str message: Last will disconnection message.
         :param int qos: Quality of Service level.
-        :param bool retain: Specifies if the message is to be retained when it is published. 
+        :param bool retain: Specifies if the message is to be retained when it is published.
         """
         if self._is_connected:
             raise MMQTTException('Last Will should be defined before connect() is called.')
@@ -282,7 +282,7 @@ class MQTT:
         self._is_connected = True
         result = rc[2] & 1
         if self.on_connect is not None:
-            self.on_connect(self, self._user_data, result, rc[3]) 
+            self.on_connect(self, self._user_data, result, rc[3])
         return result
 
     def disconnect(self):
@@ -418,7 +418,7 @@ class MQTT:
         Example of subscribing to a topic and setting the qos level to 1.
         .. code-block:: python
             mqtt_client.subscribe('topics/ledState', 1)
-        
+
         Example of subscribing to topic string and setting qos level to 1, as a tuple.
         .. code-block:: python
             mqtt_client.subscribe(('topics/ledState', 1))
@@ -453,7 +453,7 @@ class MQTT:
         packet_id_bytes = self._pid.to_bytes(2, 'big')
         # Packet with variable and fixed headers
         packet = MQTT_SUB + packet_length_byte + packet_id_bytes
-        # attaching topic and QOS level to the packet 
+        # attaching topic and QOS level to the packet
         for topic, qos in topics:
             topic_size = len(topic).to_bytes(2, 'big')
             qos_byte = qos.to_bytes(1, 'big')
