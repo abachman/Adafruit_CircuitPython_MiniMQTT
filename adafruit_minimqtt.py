@@ -43,8 +43,8 @@ import struct
 import time
 from random import randint
 import microcontroller
-import adafruit_logging as logging
 from micropython import const
+import adafruit_logging as logging
 
 __version__ = "0.0.0-auto.0"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_MiniMQTT.git"
@@ -52,13 +52,15 @@ __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_MiniMQTT.git"
 # Client-specific variables
 MQTT_MSG_MAX_SZ = const(268435455)
 MQTT_MSG_SZ_LIM = const(10000000)
-MQTT_TOPIC_SZ_LIMIT = const(65536)
+MQTT_TOPIC_LENGTH_LIMIT = const(65535)
 MQTT_TCP_PORT = const(1883)
 MQTT_TLS_PORT = const(8883)
+TCP_MODE = const(0)
+TLS_MODE = const(2)
 
 # MQTT Commands
-MQTT_PING_REQ = b'\xc0'
-MQTT_PINGRESP = b'\xd0'
+MQTT_PINGREQ = b'\xc0\0'
+MQTT_PINGRESP = const(0xd0)
 MQTT_SUB = b'\x82'
 MQTT_UNSUB = b'\xA2'
 MQTT_PUB = bytearray(b'\x30\0')
@@ -68,13 +70,15 @@ MQTT_CON_HEADER = bytearray(b"\x04MQTT\x04\x02\0\0")
 MQTT_DISCONNECT = b'\xe0\0'
 
 CONNACK_ERRORS = {const(0x01) : 'Connection Refused - Incorrect Protocol Version',
-                   const(0x02) : 'Connection Refused - ID Rejected',
-                   const(0x03) : 'Connection Refused - Server unavailable',
-                   const(0x04) : 'Connection Refused - Incorrect username/password',
-                   const(0x05) : 'Connection Refused - Unauthorized'}
+                  const(0x02) : 'Connection Refused - ID Rejected',
+                  const(0x03) : 'Connection Refused - Server unavailable',
+                  const(0x04) : 'Connection Refused - Incorrect username/password',
+                  const(0x05) : 'Connection Refused - Unauthorized'}
 
 class MMQTTException(Exception):
-    pass
+    """MiniMQTT Exception class."""
+    # pylint: disable=unnecessary-pass
+    #pass
 
 class MQTT:
     """
@@ -86,13 +90,13 @@ class MQTT:
     :param str password: Password for broker authentication.
     :param ESP_SPIcontrol esp: An ESP network interface object.
     :param str client_id: Optional client identifier, defaults to a unique, generated string.
-    :param bool is_ssl: Sets a secure or insecure connection with the broker. Defaults to True (port 8883).
+    :param bool is_ssl: Sets a secure or insecure connection with the broker.
+        Defaults to True (port 8883).
     :param bool log: Attaches a logger to the MQTT client, defaults to logging level INFO.
     """
-    TCP_MODE = const(0)
-    TLS_MODE = const(2)
+    # pylint: disable=too-many-arguments,too-many-instance-attributes, not-callable
     def __init__(self, socket, server_address, port=None, username=None,
-                    password = None, esp=None, client_id=None, is_ssl=True, log = False):
+                 password=None, esp=None, client_id=None, is_ssl=True, log=False):
         # network interface
         self._socket = socket
         if esp is not None:
@@ -101,16 +105,19 @@ class MQTT:
             else:
                 raise MMQTTException('Invalid ESP32SPI object provided.')
         else:
-            raise NotImplementedError('MiniMQTT currently only supports an ESP32SPI object, please provide one.')
+            raise NotImplementedError('MiniMQTT currently only supports an ESP32SPI object.')
         # port/ssl
         if is_ssl:
-            self.port = MQTT_TCP_PORT
-        else:
             self.port = MQTT_TLS_PORT
+        else:
+            self.port = MQTT_TCP_PORT
         if port is not None:
             self.port = port
         # session identifiers
         self._user = username
+          # [MQTT-3.1.3.5]
+        if len(password.encode('utf-8')) > MQTT_TOPIC_LENGTH_LIMIT:
+            raise MMQTTException('Password length is too large.')
         self._pass = password
         if client_id is not None:
             # user-defined client_id MAY allow client_id's > 23 bytes or
@@ -118,9 +125,11 @@ class MQTT:
             self._client_id = client_id
         else:
             # assign a unique client_id
-            self._client_id = 'cpy{0}{1}'.format(microcontroller.cpu.uid[randint(0, 15)], randint(0, 9))
+            # pylint: disable=no-member
+            self._client_id = 'cpy{0}{1}'.format(microcontroller.cpu.uid[randint(0, 15)],
+                                                 randint(0, 9))
             # generated client_id's enforce spec.'s length rules
-            if len(self._client_id) > 23 or len(self._client_id) < 1:
+            if len(self._client_id) > 23 or not self._client_id:
                 raise ValueError('MQTT Client ID must be between 1 and 23 bytes')
         self._logger = None
         if log is True:
@@ -175,7 +184,7 @@ class MQTT:
 
     def reconnect(self, retries=30, resub_topics=False):
         """Attempts to reconnect to the MQTT broker.
-        :param int retries: Amount of retries before resetting the provided network interface hardware.
+        :param int retries: Amount of retries before resetting the network interface.
         :param bool resub_topics: Client resubscribes to previously subscribed topics upon
             a successful reconnection.
         """
@@ -187,7 +196,7 @@ class MQTT:
                 self.connect(False)
             except OSError as e:
                 print('Failed to connect to the broker, retrying\n', e)
-                retries+=1
+                retries += 1
                 if retries >= 30:
                     retries = 0
                 time.sleep(0.5)
@@ -198,7 +207,7 @@ class MQTT:
             if resub_topics:
                 if self._logger is not None:
                     self._logger.debug('Attempting to resubscribe to prv. subscribed topics.')
-                while len(self._subscribed_topics) > 0:
+                while self._subscribed_topics:
                     feed = self._subscribed_topics.pop()
                     self.subscribe(feed)
 
@@ -209,6 +218,7 @@ class MQTT:
             raise MMQTTException("MiniMQTT is not connected.")
         return self._is_connected
 
+    # pylint: disable=too-many-branches, too-many-statements
     def connect(self, clean_session=True):
         """Initiates connection with the MQTT Broker.
         :param bool clean_session: Establishes a persistent session
@@ -220,12 +230,12 @@ class MQTT:
             self._socket.set_interface(self._esp)
             self._sock = self._socket.socket()
         else:
-            raise TypeError('No network interface hardware found.')
+            raise TypeError('ESP32SPI interface required!')
         self._sock.settimeout(10)
         if self.port == 8883:
             try:
                 if self._logger is not None:
-                    self._logger.debug('Attempting to establish secure MQTT connection with %s'%self.server)
+                    self._logger.debug('Attempting to establish secure MQTT connection...')
                 self._sock.connect((self.server, self.port), TLS_MODE)
             except RuntimeError:
                 raise MMQTTException("Invalid server address defined.")
@@ -233,7 +243,7 @@ class MQTT:
             addr = self._socket.getaddrinfo(self.server, self.port)[0][-1]
             try:
                 if self._logger is not None:
-                    self._logger.debug('Attempting to establish insecure MQTT connection with %s'%self.server)
+                    self._logger.debug('Attempting to establish insecure MQTT connection...')
                 self._sock.connect(addr, TCP_MODE)
             except RuntimeError:
                 raise MMQTTException("Invalid server address defined.")
@@ -245,7 +255,7 @@ class MQTT:
             sz += 2 + len(self._user) + 2 + len(self._pass)
             msg[6] |= 0xC0
         if self._keep_alive:
-            assert self._keep_alive < MQTT_TOPIC_SZ_LIMIT
+            assert self._keep_alive < MQTT_TOPIC_LENGTH_LIMIT
             msg[7] |= self._keep_alive >> 8
             msg[8] |= self._keep_alive & 0x00FF
         if self._lw_topic:
@@ -277,7 +287,7 @@ class MQTT:
             self._logger.debug('Receiving CONNACK packet from server')
         rc = self._sock.read(4)
         assert rc[0] == const(0x20) and rc[1] == const(0x02)
-        if rc[3] !=0:
+        if rc[3] != 0:
             raise MMQTTException(CONNACK_ERRORS[rc[3]])
         self._is_connected = True
         result = rc[2] & 1
@@ -286,7 +296,7 @@ class MQTT:
         return result
 
     def disconnect(self):
-        """Disconnects from the broker and closes the socket.
+        """Disconnects from the broker.
         """
         self.is_connected()
         if self._logger is not None:
@@ -307,17 +317,14 @@ class MQTT:
         self.is_connected()
         if self._logger is not None:
             self._logger.debug('Sending PINGREQ')
-        self._sock.write(MQTT_PING_REQ)
-        res = self._sock.read(1)
+        self._sock.write(MQTT_PINGREQ)
         if self._logger is not None:
             self._logger.debug('Checking PINGRESP')
-        if res == MQTT_PINGRESP:
-            sz = self._sock.read(1)[0]
-            assert sz == 0
-            return None
-        else:
-            raise MMQTTException('Server did not return with PINGRESP')
+        ping_resp = self._sock.read(2)
+        if ping_resp[0] != MQTT_PINGRESP or ping_resp[1] != const(0x00):
+            raise MMQTTException('PINGRESP not returned from server.')
 
+    # pylint: disable=too-many-branches, too-many-statements
     def publish(self, topic, msg, retain=False, qos=0):
         """Publishes a message to a topic provided.
         :param str topic: Unique topic identifier.
@@ -341,8 +348,7 @@ class MQTT:
 
         """
         self.is_connected()
-        if topic is None or len(topic) == 0:
-            raise MMQTTException("Invalid MQTT Topic, must have length > 0.")
+        self._check_topic(topic)
         if '+' in topic or '#' in topic:
             raise MMQTTException('Topic can not contain wildcards.')
         # check msg/qos kwargs
@@ -370,15 +376,17 @@ class MQTT:
             sz >>= 7
             i += 1
         pkt[i] = sz
-        self._logger.debug('Sending PUBLISH\nTopic: {0}\nMsg: {1}\nQoS: {2}\nRetain? {3}'.format(topic, msg, qos, retain))
+        if self._logger is not None:
+            self._logger.debug('Sending PUBLISH\nTopic: {0}\nMsg: {1}\
+                                \nQoS: {2}\nRetain? {3}'.format(topic, msg, qos, retain))
         self._sock.write(pkt)
         self._send_str(topic)
         if qos == 0:
             if self.on_publish is not None:
                 self.on_publish(self, self._user_data, self._pid)
         if qos > 0:
-            self.pid += 1
-            pid = self.pid
+            self._pid += 1
+            pid = self._pid
             struct.pack_into("!H", pkt, 0, pid)
             self._sock.write(pkt)
             if self.on_publish is not None:
@@ -409,7 +417,8 @@ class MQTT:
         :param str topic: Unique MQTT topic identifier.
         :param int qos: Quality of Service level for the topic, defaults to zero.
         :param tuple topic: Tuple containing topic identifier strings and qos level integers.
-        :param list topic: List of tuples containing topic identifier strings and qos level integers.
+        :param list topic: List of tuples containing topic identifier strings and
+            qos level integers.
 
         Example of subscribing a topic string.
         .. code-block:: python
@@ -432,9 +441,9 @@ class MQTT:
         topics = None
         if isinstance(topic, tuple):
             topic, qos = topic
+            self._check_topic(topic)
         if isinstance(topic, str):
-            if topic is None or len(topic) == 0 or len(topic.encode('utf-8')) > 65536:
-                raise MMQTTException("Invalid MQTT Topic, must have length > 0.")
+            self._check_topic(topic)
             if qos < 0 or qos > 2:
                 raise MMQTTException('QoS level must be between 1 and 2.')
             topics = [(topic, qos)]
@@ -443,24 +452,24 @@ class MQTT:
             for t, q in topic:
                 if q < 0 or q > 2:
                     raise MMQTTException('QoS level must be between 1 and 2.')
-                if t is None or len(t) == 0 or len(t.encode('utf-8')) > 65536:
-                    raise MMQTTException("Invalid MQTT Topic, must have length > 0.")
+                self._check_topic(t)
                 topics.append((t, q))
         # Assemble packet
-        packet_length = 2 + (2 * len(topics)) + (1 * len(topics)) + sum(len(topic) for topic, qos in topics)
+        packet_length = 2 + (2 * len(topics)) + (1 * len(topics))
+        packet_length += sum(len(topic) for topic, qos in topics)
         packet_length_byte = packet_length.to_bytes(1, 'big')
         self._pid += 11
         packet_id_bytes = self._pid.to_bytes(2, 'big')
         # Packet with variable and fixed headers
         packet = MQTT_SUB + packet_length_byte + packet_id_bytes
         # attaching topic and QOS level to the packet
-        for topic, qos in topics:
-            topic_size = len(topic).to_bytes(2, 'big')
-            qos_byte = qos.to_bytes(1, 'big')
-            packet += topic_size + topic + qos_byte
+        for t, q in topics:
+            topic_size = len(t).to_bytes(2, 'big')
+            qos_byte = q.to_bytes(1, 'big')
+            packet += topic_size + t + qos_byte
         if self._logger is not None:
-            for topic, qos in topics:
-                self._logger.debug('SUBSCRIBING to topic {0} with QoS {1}'.format(topic, qos))
+            for t, q in topics:
+                self._logger.debug('SUBSCRIBING to topic {0} with QoS {1}'.format(t, q))
         self._sock.write(packet)
         while 1:
             op = self.wait_for_msg()
@@ -476,65 +485,77 @@ class MQTT:
                 return
 
     def unsubscribe(self, topic):
-        """Unsubscribes the client from subscribed mqtt topic(s).
-        :param str topic: Topic identifier.
-        :param list topic: List of topic identifier strings.
+        """Unsubscribes from a MQTT topic.
+        :param str topic: Unique MQTT topic identifier.
+        :param list topic: List of tuples containing topic identifier strings.
 
-        Example of unsubscribing from a topic.
+        Example of unsubscribing from a topic string.
         .. code-block:: python
             mqtt_client.unsubscribe('topics/ledState')
 
         Example of unsubscribing from multiple topics.
         .. code-block:: python
-            mqtt_client.unsubscribe('topics/ledState', 'topics/servoAngle')
+            mqtt_client.unsubscribe([('topics/ledState'), ('topics/servoAngle')])
 
         """
         topics = None
         if isinstance(topic, str):
-            if topic is None or len(topic) == 0 or len(t.encode('utf-8')) > 65536:
-                raise MMQTTException("Invalid MQTT topic.")
-            if topic in self._subscribed_topics:
-                raise MMQTTException('Topic must be subscribed to before attempting to unsubscribe.')
+            self._check_topic(topic)
             topics = [(topic)]
         if isinstance(topic, list):
             topics = []
             for t in topic:
-                if t is None or len(t) == 0 or len(t.encode('utf-8')) > 65536:
-                    raise MMQTTException('Invalid MQTT Topic: %s'%t)
+                self._check_topic(t)
                 topics.append((t))
-        # Assemble packet length first
-        packet_length = 2 + (2 * len(topics)) + (1 * len(topics)) + sum(len(topic) for topic in topics)
+        for t in topics:
+            if t not in self._subscribed_topics:
+                raise MMQTTException('Topic must be subscribed to before attempting to unsubscribe.')
+        # Assemble packet
+        packet_length = 2 + (2 * len(topics))
+        packet_length += sum(len(topic) for topic in topics)
         packet_length_byte = packet_length.to_bytes(1, 'big')
-        # packet identifier
         self._pid+=11
-        packet_id_bytes=self._pid.to_bytes(2, 'big')
-        # packet with variable and fixed headers
+        packet_id_bytes = self._pid.to_bytes(2, 'big')
         packet = MQTT_UNSUB + packet_length_byte + packet_id_bytes
-        # attach topics to the packet
-        for topic in topics:
-            topic_size = len(topic).to_bytes(2, 'big')
-            packet += topic_size + topic
-        # write the packet
-        self._sock.write(packet)
+        for t in topics:
+            topic_size = len(t).to_bytes(2, 'big')
+            packet += topic_size + t
         if self._logger is not None:
             for t in topics:
-                self._logger.debug('SUBSCRIBING to topic {0}'.format(t))
+                self._logger.debug('UNSUBSCRIBING from topic {0}.'.format(t))
+        self._sock.write(packet)
+        # Check UNSUBACK
         while 1:
-            try:
-                op = self.wait_for_msg()
-                # remove topic from subscription list
+            op = self.wait_for_msg()
+            if op == const(0x01):
+                return_code = self._sock.read(4)
+                # [MQTT-3.11.1]
+                assert return_code[1] == const(0x02)
+                # [MQTT-3.32]
+                assert return_code[2] == packet_id_bytes[0] and return_code[3] == packet_id_bytes[1]
                 for t in topics:
-                    self._subscribed_topics.remove(t)
                     if self.on_unsubscribe is not None:
-                        self.on_unsubscribe(self, self._user_data)
+                        self.on_unsubscribe(self, t, self._pid)
+                    self._subscribed_topics.remove(t)
                 return
-            except RuntimeError:
-                raise MMQTTException('Could not unsubscribe from feed.')
+
+    def _check_topic(self, topic):
+        """Checks if topic provided is a valid mqtt topic.
+        :param str topic: Topic identifier
+        """
+        if topic is None:
+            raise MMQTTException('Topic may not be Nonetype')
+        # [MQTT-4.7.3-1]
+        elif not len(topic):
+            raise MMQTTException('Topic may not be empty.')
+        # [MQTT-4.7.3-3]
+        elif len(topic.encode('utf-8')) > MQTT_TOPIC_LENGTH_LIMIT:
+            raise MMQTTException('Topic length is too large.')
 
     @property
     def mqtt_msg(self):
         """Returns maximum MQTT payload and topic size."""
-        return self._msg_size_lim, MQTT_TOPIC_SZ_LIMIT
+        return self._msg_size_lim, MQTT_TOPIC_LENGTH_LIMIT
 
     @mqtt_msg.setter
     def mqtt_msg(self, msg_size):
@@ -595,24 +616,27 @@ class MQTT:
         :param str string: String to write to the socket.
         """
         self._sock.write(struct.pack("!H", len(string)))
-        if type(string) == str:
+        if isinstance(string, str):
             self._sock.write(str.encode(string, 'utf-8'))
         else:
             self._sock.write(string)
 
     # Logging
-    def create_logger(self):
-        """Initalizes a new logger instance.
+
+    def attach_logger(self, logger_name='log'):
+        """Initializes and attaches a logger to the MQTTClient.
+        :param str logger_name: Name of the logger instance
         """
-        self._logger = logging.getLogger('log')
+        self._logger = logging.getLogger(logger_name)
+        self._logger.setLevel(logging.INFO)
 
     def set_logger_level(self, log_level):
-        """Sets the level of the logger.
+        """Sets the level of the logger, if defined during init.
         :param string log_level: Level of logging to output to the REPL. Accepted
             levels are DEBUG, INFO, WARNING, EROR, and CRITICIAL.
         """
         if self._logger is None:
-            raise MMQTTException('No logger attached to MQTT Client.')
+            raise MMQTTException('No logger attached - did you create it during initialization?')
         if log_level == 'DEBUG':
             self._logger.setLevel(logging.DEBUG)
         elif log_level == 'INFO':
